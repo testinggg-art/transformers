@@ -29,7 +29,8 @@ corpora in many languages using the BART objective. mBART is one of the first me
 sequence-to-sequence model by denoising full texts in multiple languages, while previous approaches have focused only
 on the encoder, decoder, or reconstructing parts of the text.
 
-The Authors' code can be found `here <https://github.com/pytorch/fairseq/tree/master/examples/mbart>`__
+This model was contributed by `valhalla <https://huggingface.co/valhalla>`__. The Authors' code can be found `here
+<https://github.com/pytorch/fairseq/tree/master/examples/mbart>`__
 
 Training of MBart
 _______________________________________________________________________________________________________________________
@@ -239,3 +240,31 @@ TFMBartForConditionalGeneration
 
 .. autoclass:: transformers.TFMBartForConditionalGeneration
     :members: call
+
+
+FlaxMBartModel
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.FlaxMBartModel
+    :members: __call__, encode, decode
+
+
+FlaxMBartForConditionalGeneration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.FlaxMBartForConditionalGeneration
+    :members: __call__, encode, decode
+
+
+FlaxMBartForSequenceClassification
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.FlaxMBartForSequenceClassification
+    :members: __call__, encode, decode
+
+
+FlaxMBartForQuestionAnswering
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.FlaxMBartForQuestionAnswering
+    :members: __call__, encode, decode

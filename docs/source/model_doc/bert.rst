@@ -42,7 +42,8 @@ Tips:
 - BERT was trained with the masked language modeling (MLM) and next sentence prediction (NSP) objectives. It is
   efficient at predicting masked tokens and at NLU in general, but is not optimal for text generation.
 
-The original code can be found `here <https://github.com/google-research/bert>`__.
+This model was contributed by `thomwolf <https://huggingface.co/thomwolf>`__. The original code can be found `here
+<https://github.com/google-research/bert>`__.
 
 BertConfig
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -75,6 +76,9 @@ Bert specific outputs
 .. autoclass:: transformers.models.bert.modeling_tf_bert.TFBertForPreTrainingOutput
     :members:
 
+.. autoclass:: transformers.models.bert.modeling_flax_bert.FlaxBertForPreTrainingOutput
+    :members:
+
 
 BertModel
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -90,7 +94,7 @@ BertForPreTraining
     :members: forward
 
 
-BertModelLMHeadModel
+BertLMHeadModel
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: transformers.BertLMHeadModel

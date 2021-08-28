@@ -39,30 +39,31 @@ def handle_test_results(test_results):
 
 
 def format_for_slack(total_results, results, scheduled: bool):
-    print(results)
+    print(total_results, results)
     header = {
         "type": "header",
         "text": {
             "type": "plain_text",
-            "text": "🤗 Results of the scheduled tests, March 11, 2021." if scheduled else "🤗 Self-push results",
+            "text": "🤗 Results of the scheduled tests." if scheduled else "🤗 Self-push results",
             "emoji": True,
         },
     }
 
-    total = (
-        {
+    if total_results["failed"] > 0:
+        total = {
             "type": "section",
             "fields": [
                 {"type": "mrkdwn", "text": f"*Failures:*\n❌ {total_results['failed']} failures."},
                 {"type": "mrkdwn", "text": f"*Passed:*\n✅ {total_results['success']} tests passed."},
             ],
         }
-        if total_results["failed"] > 0
-        else {
+    else:
+        total = {
             "type": "section",
-            "fields": [{"type": "mrkdwn", "text": f"*Congrats!*\nAll {total_results['success']} tests pass."}],
+            "fields": [
+                {"type": "mrkdwn", "text": "\n🌞 All tests passed."},
+            ],
         }
-    )
 
     blocks = [header, total]
 
@@ -82,7 +83,7 @@ def format_for_slack(total_results, results, scheduled: bool):
                     ],
                 }
             )
-    else:
+    elif not scheduled:
         for key, result in results.items():
             blocks.append(
                 {"type": "section", "fields": [{"type": "mrkdwn", "text": f"*{key}*\n{result['time_spent']}."}]}
@@ -92,9 +93,7 @@ def format_for_slack(total_results, results, scheduled: bool):
         "type": "section",
         "text": {
             "type": "mrkdwn",
-            "text": "<https://github.com/huggingface/transformers/actions/workflows/self-scheduled.yml|View on GitHub>"
-            if scheduled
-            else "<https://github.com/huggingface/transformers/actions/workflows/self-push.yml|View on GitHub>",
+            "text": f"<https://github.com/huggingface/transformers/actions/runs/{os.environ['GITHUB_RUN_ID']}|View on GitHub>",
         },
     }
 
@@ -128,6 +127,12 @@ if __name__ == "__main__":
                 "common": "run_all_tests_torch_multi_gpu_test_reports/tests_torch_multi_gpu_[].txt",
                 "pipeline": "run_all_tests_torch_multi_gpu_test_reports/tests_torch_pipeline_multi_gpu_[].txt",
             },
+            "Torch Cuda Extensions Single GPU": {
+                "common": "run_tests_torch_cuda_extensions_gpu_test_reports/tests_torch_cuda_extensions_gpu_[].txt"
+            },
+            "Torch Cuda Extensions Multi GPU": {
+                "common": "run_tests_torch_cuda_extensions_multi_gpu_test_reports/tests_torch_cuda_extensions_multi_gpu_[].txt"
+            },
         }
     else:
         file_paths = {
@@ -135,10 +140,16 @@ if __name__ == "__main__":
             "Torch Single GPU": {"common": "run_all_tests_torch_gpu_test_reports/tests_torch_gpu_[].txt"},
             "TF Multi GPU": {"common": "run_all_tests_tf_multi_gpu_test_reports/tests_tf_multi_gpu_[].txt"},
             "Torch Multi GPU": {"common": "run_all_tests_torch_multi_gpu_test_reports/tests_torch_multi_gpu_[].txt"},
+            "Torch Cuda Extensions Single GPU": {
+                "common": "run_tests_torch_cuda_extensions_gpu_test_reports/tests_torch_cuda_extensions_gpu_[].txt"
+            },
+            "Torch Cuda Extensions Multi GPU": {
+                "common": "run_tests_torch_cuda_extensions_multi_gpu_test_reports/tests_torch_cuda_extensions_multi_gpu_[].txt"
+            },
         }
 
     client = WebClient(token=os.environ["CI_SLACK_BOT_TOKEN"])
-    channel_id = os.environ["CI_SLACK_CHANNEL_ID"]
+    channel_id = os.environ["CI_SLACK_CHANNEL_ID_DAILY"] if scheduled else os.environ["CI_SLACK_CHANNEL_ID"]
 
     try:
         results = {}
@@ -148,15 +159,18 @@ if __name__ == "__main__":
             results[job] = {"failed": 0, "success": 0, "time_spent": "", "failures": ""}
 
             for key, file_path in file_dict.items():
-                with open(file_path.replace("[]", "stats")) as f:
-                    failed, success, time_spent = handle_test_results(f.read())
-                    results[job]["failed"] += failed
-                    results[job]["success"] += success
-                    results[job]["time_spent"] += time_spent[1:-1] + ", "
-                with open(file_path.replace("[]", "summary_short")) as f:
-                    for line in f:
-                        if re.search("FAILED", line):
-                            results[job]["failures"] += line
+                try:
+                    with open(file_path.replace("[]", "stats")) as f:
+                        failed, success, time_spent = handle_test_results(f.read())
+                        results[job]["failed"] += failed
+                        results[job]["success"] += success
+                        results[job]["time_spent"] += time_spent[1:-1] + ", "
+                    with open(file_path.replace("[]", "summary_short")) as f:
+                        for line in f:
+                            if re.search("FAILED", line):
+                                results[job]["failures"] += line
+                except FileNotFoundError:
+                    print("Artifact was not found, job was probably canceled.")
 
             # Remove the trailing ", "
             results[job]["time_spent"] = results[job]["time_spent"][:-2]
@@ -167,12 +181,13 @@ if __name__ == "__main__":
             for result_key in test_results_keys:
                 total[result_key] += job_result[result_key]
 
-        to_be_sent_to_slack = format_for_slack(total, results, scheduled)
+        if total["failed"] != 0 or scheduled:
+            to_be_sent_to_slack = format_for_slack(total, results, scheduled)
 
-        result = client.chat_postMessage(
-            channel=channel_id,
-            blocks=to_be_sent_to_slack["blocks"],
-        )
+            result = client.chat_postMessage(
+                channel=channel_id,
+                blocks=to_be_sent_to_slack["blocks"],
+            )
 
         for job, job_result in results.items():
             if len(job_result["failures"]):

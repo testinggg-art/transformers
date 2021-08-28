@@ -34,6 +34,8 @@ to create high quality models. Our focus on non-English-Centric models brings ga
 translating between non-English directions while performing competitively to the best single systems of WMT. We
 open-source our scripts so that others may reproduce the data, evaluation, and final M2M-100 model.*
 
+This model was contributed by `valhalla <https://huggingface.co/valhalla>`__.
+
 
 Training and Generation
 _______________________________________________________________________________________________________________________
@@ -56,7 +58,7 @@ examples. To install :obj:`sentencepiece` run ``pip install sentencepiece``.
     tokenizer = M2M100Tokenizer.from_pretrained('facebook/m2m100_418M', src_lang="en", tgt_lang="fr")
 
     src_text = "Life is like a box of chocolates."
-    tgt_lang = "La vie est comme une boîte de chocolat."
+    tgt_text = "La vie est comme une boîte de chocolat."
 
     model_inputs = tokenizer(src_text, return_tensors="pt")
     with tokenizer.as_target_tokenizer():

@@ -14,8 +14,11 @@
 # limitations under the License.
 """ BART model configuration """
 import warnings
+from collections import OrderedDict
+from typing import Mapping
 
 from ...configuration_utils import PretrainedConfig
+from ...onnx import OnnxConfigWithPast
 from ...utils import logging
 
 
@@ -171,7 +174,7 @@ class BartConfig(PretrainedConfig):
         self.gradient_checkpointing = gradient_checkpointing
         self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
 
-        # ensure backward compatibilty for BART CNN models
+        # ensure backward compatibility for BART CNN models
         if self.forced_bos_token_id is None and kwargs.get("force_bos_token_to_be_generated", False):
             self.forced_bos_token_id = self.bos_token_id
             warnings.warn(
@@ -186,3 +189,32 @@ class BartConfig(PretrainedConfig):
     @property
     def hidden_size(self) -> int:
         return self.d_model
+
+
+class BartOnnxConfig(OnnxConfigWithPast):
+    @property
+    def inputs(self) -> Mapping[str, Mapping[int, str]]:
+        return OrderedDict(
+            [
+                ("input_ids", {0: "batch", 1: "sequence"}),
+                ("attention_mask", {0: "batch", 1: "sequence"}),
+            ]
+        )
+
+    @property
+    def outputs(self) -> Mapping[str, Mapping[int, str]]:
+        if self.use_past:
+            return OrderedDict(
+                [
+                    ("last_hidden_state", {0: "batch", 1: "sequence"}),
+                    ("past_keys", {0: "batch", 2: "sequence"}),
+                    ("encoder_last_hidden_state", {0: "batch", 1: "sequence"}),
+                ]
+            )
+        else:
+            return OrderedDict(
+                [
+                    ("last_hidden_state", {0: "batch", 1: "sequence"}),
+                    ("encoder_last_hidden_state", {0: "batch", 1: "sequence"}),
+                ]
+            )

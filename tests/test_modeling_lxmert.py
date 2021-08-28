@@ -17,7 +17,10 @@
 import copy
 import unittest
 
-from transformers import is_torch_available
+import numpy as np
+
+from transformers import LxmertConfig, is_torch_available
+from transformers.models.auto import get_values
 from transformers.testing_utils import require_torch, slow, torch_device
 
 from .test_configuration_common import ConfigTester
@@ -30,7 +33,6 @@ if is_torch_available():
     from transformers import (
         MODEL_FOR_PRETRAINING_MAPPING,
         MODEL_FOR_QUESTION_ANSWERING_MAPPING,
-        LxmertConfig,
         LxmertForPreTraining,
         LxmertForQuestionAnswering,
         LxmertModel,
@@ -39,7 +41,7 @@ if is_torch_available():
 
 
 class LxmertModelTester:
-    """You can also import this e.g from .test_modeling_bart import BartModelTester """
+    """You can also import this e.g from .test_modeling_bart import BartModelTester"""
 
     def __init__(
         self,
@@ -167,7 +169,24 @@ class LxmertModelTester:
         if self.task_matched:
             matched_label = ids_tensor([self.batch_size], self.num_labels)
 
-        config = LxmertConfig(
+        config = self.get_config()
+
+        return (
+            config,
+            input_ids,
+            visual_feats,
+            bounding_boxes,
+            token_type_ids,
+            input_mask,
+            obj_labels,
+            masked_lm_labels,
+            matched_label,
+            ans,
+            output_attentions,
+        )
+
+    def get_config(self):
+        return LxmertConfig(
             vocab_size=self.vocab_size,
             hidden_size=self.hidden_size,
             num_attention_heads=self.num_attention_heads,
@@ -199,20 +218,6 @@ class LxmertModelTester:
             visual_feat_loss=self.visual_feat_loss,
             output_attentions=self.output_attentions,
             output_hidden_states=self.output_hidden_states,
-        )
-
-        return (
-            config,
-            input_ids,
-            visual_feats,
-            bounding_boxes,
-            token_type_ids,
-            input_mask,
-            obj_labels,
-            masked_lm_labels,
-            matched_label,
-            ans,
-            output_attentions,
         )
 
     def create_and_check_lxmert_model(
@@ -532,11 +537,11 @@ class LxmertModelTest(ModelTesterMixin, unittest.TestCase):
         inputs_dict = copy.deepcopy(inputs_dict)
 
         if return_labels:
-            if model_class in MODEL_FOR_QUESTION_ANSWERING_MAPPING.values():
+            if model_class in get_values(MODEL_FOR_QUESTION_ANSWERING_MAPPING):
                 inputs_dict["labels"] = torch.zeros(
                     self.model_tester.batch_size, dtype=torch.long, device=torch_device
                 )
-            elif model_class in MODEL_FOR_PRETRAINING_MAPPING.values():
+            elif model_class in get_values(MODEL_FOR_PRETRAINING_MAPPING):
                 # special case for models like BERT that use multi-loss training for PreTraining
                 inputs_dict["labels"] = torch.zeros(
                     (self.model_tester.batch_size, self.model_tester.seq_length), dtype=torch.long, device=torch_device
@@ -726,3 +731,24 @@ class LxmertModelTest(ModelTesterMixin, unittest.TestCase):
         self.assertIsNotNone(attentions_vision.grad)
         self.assertIsNotNone(hidden_states_vision.grad)
         self.assertIsNotNone(attentions_vision.grad)
+
+
+@require_torch
+class LxmertModelIntegrationTest(unittest.TestCase):
+    @slow
+    def test_inference_no_head_absolute_embedding(self):
+        model = LxmertModel.from_pretrained(LXMERT_PRETRAINED_MODEL_ARCHIVE_LIST[0])
+        input_ids = torch.tensor([[101, 345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 102]])
+        num_visual_features = 10
+        _, visual_feats = np.random.seed(0), np.random.rand(1, num_visual_features, model.config.visual_feat_dim)
+        _, visual_pos = np.random.seed(0), np.random.rand(1, num_visual_features, 4)
+        visual_feats = torch.as_tensor(visual_feats, dtype=torch.float32)
+        visual_pos = torch.as_tensor(visual_pos, dtype=torch.float32)
+        output = model(input_ids, visual_feats=visual_feats, visual_pos=visual_pos)[0]
+        expected_shape = torch.Size([1, 11, 768])
+        self.assertEqual(expected_shape, output.shape)
+        expected_slice = torch.tensor(
+            [[[0.2417, -0.9807, 0.1480], [1.2541, -0.8320, 0.5112], [1.4070, -1.1052, 0.6990]]]
+        )
+
+        self.assertTrue(torch.allclose(output[:, :3, :3], expected_slice, atol=1e-4))

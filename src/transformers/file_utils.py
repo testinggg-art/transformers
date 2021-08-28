@@ -15,18 +15,20 @@
 Utilities for working with the local dataset cache. Parts of this file is adapted from the AllenNLP library at
 https://github.com/allenai/allennlp.
 """
-
 import copy
 import fnmatch
+import functools
 import importlib.util
 import io
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
+import types
 from collections import OrderedDict, UserDict
 from contextlib import contextmanager
 from dataclasses import fields
@@ -46,10 +48,10 @@ from tqdm.auto import tqdm
 
 import requests
 from filelock import FileLock
+from huggingface_hub import HfApi, HfFolder, Repository
 from transformers.utils.versions import importlib_metadata
 
 from . import __version__
-from .hf_api import HfFolder
 from .utils import logging
 
 
@@ -86,6 +88,9 @@ if USE_TF in ENV_VARS_TRUE_AND_AUTO_VALUES and USE_TORCH not in ENV_VARS_TRUE_VA
             "tf-nightly-cpu",
             "tf-nightly-gpu",
             "intel-tensorflow",
+            "intel-tensorflow-avx512",
+            "tensorflow-rocm",
+            "tensorflow-macos",
         )
         _tf_version = None
         # For the metadata, we have to look for both tensorflow and tensorflow-cpu
@@ -144,9 +149,30 @@ except importlib_metadata.PackageNotFoundError:
         _faiss_available = False
 
 
-_onnx_available = (
-    importlib.util.find_spec("keras2onnx") is not None and importlib.util.find_spec("onnxruntime") is not None
-)
+coloredlogs = importlib.util.find_spec("coloredlogs") is not None
+try:
+    _coloredlogs_available = importlib_metadata.version("coloredlogs")
+    logger.debug(f"Successfully imported sympy version {_coloredlogs_available}")
+except importlib_metadata.PackageNotFoundError:
+    _coloredlogs_available = False
+
+
+sympy_available = importlib.util.find_spec("sympy") is not None
+try:
+    _sympy_available = importlib_metadata.version("sympy")
+    logger.debug(f"Successfully imported sympy version {_sympy_available}")
+except importlib_metadata.PackageNotFoundError:
+    _sympy_available = False
+
+
+_keras2onnx_available = importlib.util.find_spec("keras2onnx") is not None
+try:
+    _keras2onnx_version = importlib_metadata.version("keras2onnx")
+    logger.debug(f"Successfully imported keras2onnx version {_keras2onnx_version}")
+except importlib_metadata.PackageNotFoundError:
+    _keras2onnx_available = False
+
+_onnx_available = importlib.util.find_spec("onnxruntime") is not None
 try:
     _onxx_version = importlib_metadata.version("onnx")
     logger.debug(f"Successfully imported onnx version {_onxx_version}")
@@ -168,6 +194,14 @@ try:
     logger.debug(f"Successfully imported soundfile version {_soundfile_version}")
 except importlib_metadata.PackageNotFoundError:
     _soundfile_available = False
+
+
+_timm_available = importlib.util.find_spec("timm") is not None
+try:
+    _timm_version = importlib_metadata.version("timm")
+    logger.debug(f"Successfully imported timm version {_timm_version}")
+except importlib_metadata.PackageNotFoundError:
+    _timm_available = False
 
 
 _torchaudio_available = importlib.util.find_spec("torchaudio") is not None
@@ -228,13 +262,21 @@ DUMMY_MASK = [[1, 1, 1, 1, 1], [1, 1, 1, 0, 0], [0, 0, 0, 1, 1]]
 
 S3_BUCKET_PREFIX = "https://s3.amazonaws.com/models.huggingface.co/bert"
 CLOUDFRONT_DISTRIB_PREFIX = "https://cdn.huggingface.co"
-HUGGINGFACE_CO_PREFIX = "https://huggingface.co/{model_id}/resolve/{revision}/{filename}"
+
+_staging_mode = os.environ.get("HUGGINGFACE_CO_STAGING", "NO").upper() in ENV_VARS_TRUE_VALUES
+_default_endpoint = "https://moon-staging.huggingface.co" if _staging_mode else "https://huggingface.co"
+
+HUGGINGFACE_CO_RESOLVE_ENDPOINT = os.environ.get("HUGGINGFACE_CO_RESOLVE_ENDPOINT", _default_endpoint)
+HUGGINGFACE_CO_PREFIX = HUGGINGFACE_CO_RESOLVE_ENDPOINT + "/{model_id}/resolve/{revision}/{filename}"
 
 PRESET_MIRROR_DICT = {
     "tuna": "https://mirrors.tuna.tsinghua.edu.cn/hugging-face-models",
     "bfsu": "https://mirrors.bfsu.edu.cn/hugging-face-models",
 }
 
+# This is the version of torch required to run torch.fx features and torch.onnx with dictionary inputs.
+TORCH_FX_REQUIRED_VERSION = version.parse("1.8")
+TORCH_ONNX_DICT_INPUTS_MINIMUM_VERSION = version.parse("1.8")
 
 _is_offline_mode = True if os.environ.get("TRANSFORMERS_OFFLINE", "0").upper() in ENV_VARS_TRUE_VALUES else False
 
@@ -256,8 +298,35 @@ def is_torch_cuda_available():
         return False
 
 
+_torch_fx_available = _torch_onnx_dict_inputs_support_available = False
+if _torch_available:
+    torch_version = version.parse(importlib_metadata.version("torch"))
+    _torch_fx_available = (torch_version.major, torch_version.minor) == (
+        TORCH_FX_REQUIRED_VERSION.major,
+        TORCH_FX_REQUIRED_VERSION.minor,
+    )
+
+    _torch_onnx_dict_inputs_support_available = torch_version >= TORCH_ONNX_DICT_INPUTS_MINIMUM_VERSION
+
+
+def is_torch_fx_available():
+    return _torch_fx_available
+
+
+def is_torch_onnx_dict_inputs_support_available():
+    return _torch_onnx_dict_inputs_support_available
+
+
 def is_tf_available():
     return _tf_available
+
+
+def is_coloredlogs_available():
+    return _coloredlogs_available
+
+
+def is_keras2onnx_available():
+    return _keras2onnx_available
 
 
 def is_onnx_available():
@@ -283,6 +352,10 @@ def is_datasets_available():
     return _datasets_available
 
 
+def is_rjieba_available():
+    return importlib.util.find_spec("rjieba") is not None
+
+
 def is_psutil_available():
     return importlib.util.find_spec("psutil") is not None
 
@@ -299,12 +372,14 @@ def is_faiss_available():
     return _faiss_available
 
 
+def is_scipy_available():
+    return importlib.util.find_spec("scipy") is not None
+
+
 def is_sklearn_available():
     if importlib.util.find_spec("sklearn") is None:
         return False
-    if importlib.util.find_spec("scipy") is None:
-        return False
-    return importlib.util.find_spec("sklearn.metrics") and importlib.util.find_spec("scipy.stats")
+    return is_scipy_available() and importlib.util.find_spec("sklearn.metrics")
 
 
 def is_sentencepiece_available():
@@ -391,6 +466,10 @@ def is_training_run_on_sagemaker():
 
 def is_soundfile_availble():
     return _soundfile_available
+
+
+def is_timm_available():
+    return _timm_available
 
 
 def is_torchaudio_available():
@@ -519,11 +598,23 @@ explained here: https://pandas.pydata.org/pandas-docs/stable/getting_started/ins
 
 
 # docstyle-ignore
+SCIPY_IMPORT_ERROR = """
+{0} requires the scipy library but it was not found in your environment. You can install it with pip:
+`pip install scipy`
+"""
+
+
+# docstyle-ignore
 SPEECH_IMPORT_ERROR = """
 {0} requires the torchaudio library but it was not found in your environment. You can install it with pip:
 `pip install torchaudio`
 """
 
+# docstyle-ignore
+TIMM_IMPORT_ERROR = """
+{0} requires the timm library but it was not found in your environment. You can install it with pip:
+`pip install timm`
+"""
 
 # docstyle-ignore
 VISION_IMPORT_ERROR = """
@@ -544,9 +635,11 @@ BACKENDS_MAPPING = OrderedDict(
         ("sklearn", (is_sklearn_available, SKLEARN_IMPORT_ERROR)),
         ("speech", (is_speech_available, SPEECH_IMPORT_ERROR)),
         ("tf", (is_tf_available, TENSORFLOW_IMPORT_ERROR)),
-        ("tokenziers", (is_tokenizers_available, TOKENIZERS_IMPORT_ERROR)),
+        ("timm", (is_timm_available, TIMM_IMPORT_ERROR)),
+        ("tokenizers", (is_tokenizers_available, TOKENIZERS_IMPORT_ERROR)),
         ("torch", (is_torch_available, PYTORCH_IMPORT_ERROR)),
         ("vision", (is_vision_available, VISION_IMPORT_ERROR)),
+        ("scipy", (is_scipy_available, SCIPY_IMPORT_ERROR)),
     ]
 )
 
@@ -595,18 +688,18 @@ def add_end_docstrings(*docstr):
 
 PT_RETURN_INTRODUCTION = r"""
     Returns:
-        :class:`~{full_output_type}` or :obj:`tuple(torch.FloatTensor)`: A :class:`~{full_output_type}` (if
-        ``return_dict=True`` is passed or when ``config.return_dict=True``) or a tuple of :obj:`torch.FloatTensor`
-        comprising various elements depending on the configuration (:class:`~transformers.{config_class}`) and inputs.
+        :class:`~{full_output_type}` or :obj:`tuple(torch.FloatTensor)`: A :class:`~{full_output_type}` or a tuple of
+        :obj:`torch.FloatTensor` (if ``return_dict=False`` is passed or when ``config.return_dict=False``) comprising
+        various elements depending on the configuration (:class:`~transformers.{config_class}`) and inputs.
 
 """
 
 
 TF_RETURN_INTRODUCTION = r"""
     Returns:
-        :class:`~{full_output_type}` or :obj:`tuple(tf.Tensor)`: A :class:`~{full_output_type}` (if
-        ``return_dict=True`` is passed or when ``config.return_dict=True``) or a tuple of :obj:`tf.Tensor` comprising
-        various elements depending on the configuration (:class:`~transformers.{config_class}`) and inputs.
+        :class:`~{full_output_type}` or :obj:`tuple(tf.Tensor)`: A :class:`~{full_output_type}` or a tuple of
+        :obj:`tf.Tensor` (if ``return_dict=False`` is passed or when ``config.return_dict=False``) comprising various
+        elements depending on the configuration (:class:`~transformers.{config_class}`) and inputs.
 
 """
 
@@ -764,7 +857,7 @@ PT_MULTIPLE_CHOICE_SAMPLE = r"""
         >>> choice1 = "It is eaten while held in the hand."
         >>> labels = torch.tensor(0).unsqueeze(0)  # choice0 is correct (according to Wikipedia ;)), batch size 1
 
-        >>> encoding = tokenizer([[prompt, prompt], [choice0, choice1]], return_tensors='pt', padding=True)
+        >>> encoding = tokenizer([prompt, prompt], [choice0, choice1], return_tensors='pt', padding=True)
         >>> outputs = model(**{{k: v.unsqueeze(0) for k,v in encoding.items()}}, labels=labels)  # batch size is 1
 
         >>> # the linear classifier still needs to be trained
@@ -786,6 +879,17 @@ PT_CAUSAL_LM_SAMPLE = r"""
         >>> loss = outputs.loss
         >>> logits = outputs.logits
 """
+
+PT_SAMPLE_DOCSTRINGS = {
+    "SequenceClassification": PT_SEQUENCE_CLASSIFICATION_SAMPLE,
+    "QuestionAnswering": PT_QUESTION_ANSWERING_SAMPLE,
+    "TokenClassification": PT_TOKEN_CLASSIFICATION_SAMPLE,
+    "MultipleChoice": PT_MULTIPLE_CHOICE_SAMPLE,
+    "MaskedLM": PT_MASKED_LM_SAMPLE,
+    "LMHead": PT_CAUSAL_LM_SAMPLE,
+    "BaseModel": PT_BASE_MODEL_SAMPLE,
+}
+
 
 TF_TOKEN_CLASSIFICATION_SAMPLE = r"""
     Example::
@@ -886,7 +990,7 @@ TF_MULTIPLE_CHOICE_SAMPLE = r"""
         >>> choice0 = "It is eaten with a fork and a knife."
         >>> choice1 = "It is eaten while held in the hand."
 
-        >>> encoding = tokenizer([[prompt, prompt], [choice0, choice1]], return_tensors='tf', padding=True)
+        >>> encoding = tokenizer([prompt, prompt], [choice0, choice1], return_tensors='tf', padding=True)
         >>> inputs = {{k: tf.expand_dims(v, 0) for k, v in encoding.items()}}
         >>> outputs = model(inputs)  # batch size is 1
 
@@ -908,30 +1012,164 @@ TF_CAUSAL_LM_SAMPLE = r"""
         >>> logits = outputs.logits
 """
 
+TF_SAMPLE_DOCSTRINGS = {
+    "SequenceClassification": TF_SEQUENCE_CLASSIFICATION_SAMPLE,
+    "QuestionAnswering": TF_QUESTION_ANSWERING_SAMPLE,
+    "TokenClassification": TF_TOKEN_CLASSIFICATION_SAMPLE,
+    "MultipleChoice": TF_MULTIPLE_CHOICE_SAMPLE,
+    "MaskedLM": TF_MASKED_LM_SAMPLE,
+    "LMHead": TF_CAUSAL_LM_SAMPLE,
+    "BaseModel": TF_BASE_MODEL_SAMPLE,
+}
+
+
+FLAX_TOKEN_CLASSIFICATION_SAMPLE = r"""
+    Example::
+
+        >>> from transformers import {tokenizer_class}, {model_class}
+
+        >>> tokenizer = {tokenizer_class}.from_pretrained('{checkpoint}')
+        >>> model = {model_class}.from_pretrained('{checkpoint}')
+
+        >>> inputs = tokenizer("Hello, my dog is cute", return_tensors='jax')
+
+        >>> outputs = model(**inputs)
+        >>> logits = outputs.logits
+"""
+
+FLAX_QUESTION_ANSWERING_SAMPLE = r"""
+    Example::
+
+        >>> from transformers import {tokenizer_class}, {model_class}
+
+        >>> tokenizer = {tokenizer_class}.from_pretrained('{checkpoint}')
+        >>> model = {model_class}.from_pretrained('{checkpoint}')
+
+        >>> question, text = "Who was Jim Henson?", "Jim Henson was a nice puppet"
+        >>> inputs = tokenizer(question, text, return_tensors='jax')
+
+        >>> outputs = model(**inputs)
+        >>> start_scores = outputs.start_logits
+        >>> end_scores = outputs.end_logits
+"""
+
+FLAX_SEQUENCE_CLASSIFICATION_SAMPLE = r"""
+    Example::
+
+        >>> from transformers import {tokenizer_class}, {model_class}
+
+        >>> tokenizer = {tokenizer_class}.from_pretrained('{checkpoint}')
+        >>> model = {model_class}.from_pretrained('{checkpoint}')
+
+        >>> inputs = tokenizer("Hello, my dog is cute", return_tensors='jax')
+
+        >>> outputs = model(**inputs)
+        >>> logits = outputs.logits
+"""
+
+FLAX_MASKED_LM_SAMPLE = r"""
+    Example::
+
+        >>> from transformers import {tokenizer_class}, {model_class}
+
+        >>> tokenizer = {tokenizer_class}.from_pretrained('{checkpoint}')
+        >>> model = {model_class}.from_pretrained('{checkpoint}')
+
+        >>> inputs = tokenizer("The capital of France is {mask}.", return_tensors='jax')
+
+        >>> outputs = model(**inputs)
+        >>> logits = outputs.logits
+"""
+
+FLAX_BASE_MODEL_SAMPLE = r"""
+    Example::
+
+        >>> from transformers import {tokenizer_class}, {model_class}
+
+        >>> tokenizer = {tokenizer_class}.from_pretrained('{checkpoint}')
+        >>> model = {model_class}.from_pretrained('{checkpoint}')
+
+        >>> inputs = tokenizer("Hello, my dog is cute", return_tensors='jax')
+        >>> outputs = model(**inputs)
+
+        >>> last_hidden_states = outputs.last_hidden_state
+"""
+
+FLAX_MULTIPLE_CHOICE_SAMPLE = r"""
+    Example::
+
+        >>> from transformers import {tokenizer_class}, {model_class}
+
+        >>> tokenizer = {tokenizer_class}.from_pretrained('{checkpoint}')
+        >>> model = {model_class}.from_pretrained('{checkpoint}')
+
+        >>> prompt = "In Italy, pizza served in formal settings, such as at a restaurant, is presented unsliced."
+        >>> choice0 = "It is eaten with a fork and a knife."
+        >>> choice1 = "It is eaten while held in the hand."
+
+        >>> encoding = tokenizer([prompt, prompt], [choice0, choice1], return_tensors='jax', padding=True)
+        >>> outputs = model(**{{k: v[None, :] for k,v in encoding.items()}})
+
+        >>> logits = outputs.logits
+"""
+
+FLAX_CAUSAL_LM_SAMPLE = r"""
+    Example::
+
+        >>> from transformers import {tokenizer_class}, {model_class}
+
+        >>> tokenizer = {tokenizer_class}.from_pretrained('{checkpoint}')
+        >>> model = {model_class}.from_pretrained('{checkpoint}')
+
+        >>> inputs = tokenizer("Hello, my dog is cute", return_tensors="np")
+        >>> outputs = model(**inputs)
+
+        >>> # retrieve logts for next token
+        >>> next_token_logits = outputs.logits[:, -1]
+"""
+
+FLAX_SAMPLE_DOCSTRINGS = {
+    "SequenceClassification": FLAX_SEQUENCE_CLASSIFICATION_SAMPLE,
+    "QuestionAnswering": FLAX_QUESTION_ANSWERING_SAMPLE,
+    "TokenClassification": FLAX_TOKEN_CLASSIFICATION_SAMPLE,
+    "MultipleChoice": FLAX_MULTIPLE_CHOICE_SAMPLE,
+    "MaskedLM": FLAX_MASKED_LM_SAMPLE,
+    "BaseModel": FLAX_BASE_MODEL_SAMPLE,
+    "LMHead": FLAX_CAUSAL_LM_SAMPLE,
+}
+
 
 def add_code_sample_docstrings(
-    *docstr, tokenizer_class=None, checkpoint=None, output_type=None, config_class=None, mask=None
+    *docstr, tokenizer_class=None, checkpoint=None, output_type=None, config_class=None, mask=None, model_cls=None
 ):
     def docstring_decorator(fn):
-        model_class = fn.__qualname__.split(".")[0]
-        is_tf_class = model_class[:2] == "TF"
+        # model_class defaults to function's class if not specified otherwise
+        model_class = fn.__qualname__.split(".")[0] if model_cls is None else model_cls
+
+        if model_class[:2] == "TF":
+            sample_docstrings = TF_SAMPLE_DOCSTRINGS
+        elif model_class[:4] == "Flax":
+            sample_docstrings = FLAX_SAMPLE_DOCSTRINGS
+        else:
+            sample_docstrings = PT_SAMPLE_DOCSTRINGS
+
         doc_kwargs = dict(model_class=model_class, tokenizer_class=tokenizer_class, checkpoint=checkpoint)
 
         if "SequenceClassification" in model_class:
-            code_sample = TF_SEQUENCE_CLASSIFICATION_SAMPLE if is_tf_class else PT_SEQUENCE_CLASSIFICATION_SAMPLE
+            code_sample = sample_docstrings["SequenceClassification"]
         elif "QuestionAnswering" in model_class:
-            code_sample = TF_QUESTION_ANSWERING_SAMPLE if is_tf_class else PT_QUESTION_ANSWERING_SAMPLE
+            code_sample = sample_docstrings["QuestionAnswering"]
         elif "TokenClassification" in model_class:
-            code_sample = TF_TOKEN_CLASSIFICATION_SAMPLE if is_tf_class else PT_TOKEN_CLASSIFICATION_SAMPLE
+            code_sample = sample_docstrings["TokenClassification"]
         elif "MultipleChoice" in model_class:
-            code_sample = TF_MULTIPLE_CHOICE_SAMPLE if is_tf_class else PT_MULTIPLE_CHOICE_SAMPLE
+            code_sample = sample_docstrings["MultipleChoice"]
         elif "MaskedLM" in model_class or model_class in ["FlaubertWithLMHeadModel", "XLMWithLMHeadModel"]:
             doc_kwargs["mask"] = "[MASK]" if mask is None else mask
-            code_sample = TF_MASKED_LM_SAMPLE if is_tf_class else PT_MASKED_LM_SAMPLE
+            code_sample = sample_docstrings["MaskedLM"]
         elif "LMHead" in model_class or "CausalLM" in model_class:
-            code_sample = TF_CAUSAL_LM_SAMPLE if is_tf_class else PT_CAUSAL_LM_SAMPLE
+            code_sample = sample_docstrings["LMHead"]
         elif "Model" in model_class or "Encoder" in model_class:
-            code_sample = TF_BASE_MODEL_SAMPLE if is_tf_class else PT_BASE_MODEL_SAMPLE
+            code_sample = sample_docstrings["BaseModel"]
         else:
             raise ValueError(f"Docstring can't be built for model {model_class}")
 
@@ -1398,6 +1636,11 @@ def get_from_cache(
         logger.info(f"storing {url} in cache at {cache_path}")
         os.replace(temp_file.name, cache_path)
 
+        # NamedTemporaryFile creates a file with hardwired 0600 perms (ignoring umask), so fixing it.
+        umask = os.umask(0o666)
+        os.umask(umask)
+        os.chmod(cache_path, 0o666 & ~umask)
+
         logger.info(f"creating metadata file for {cache_path}")
         meta = {"url": url, "etag": etag}
         meta_path = cache_path + ".json"
@@ -1405,6 +1648,56 @@ def get_from_cache(
             json.dump(meta, meta_file)
 
     return cache_path
+
+
+def get_list_of_files(
+    path_or_repo: Union[str, os.PathLike],
+    revision: Optional[str] = None,
+    use_auth_token: Optional[Union[bool, str]] = None,
+    local_files_only: bool = False,
+) -> List[str]:
+    """
+    Gets the list of files inside :obj:`path_or_repo`.
+
+    Args:
+        path_or_repo (:obj:`str` or :obj:`os.PathLike`):
+            Can be either the id of a repo on huggingface.co or a path to a `directory`.
+        revision (:obj:`str`, `optional`, defaults to :obj:`"main"`):
+            The specific model version to use. It can be a branch name, a tag name, or a commit id, since we use a
+            git-based system for storing models and other artifacts on huggingface.co, so ``revision`` can be any
+            identifier allowed by git.
+        use_auth_token (:obj:`str` or `bool`, `optional`):
+            The token to use as HTTP bearer authorization for remote files. If :obj:`True`, will use the token
+            generated when running :obj:`transformers-cli login` (stored in :obj:`~/.huggingface`).
+        local_files_only (:obj:`bool`, `optional`, defaults to :obj:`False`):
+            Whether or not to only rely on local files and not to attempt to download any files.
+
+    Returns:
+        :obj:`List[str]`: The list of files available in :obj:`path_or_repo`.
+    """
+    path_or_repo = str(path_or_repo)
+    # If path_or_repo is a folder, we just return what is inside (subdirectories included).
+    if os.path.isdir(path_or_repo):
+        list_of_files = []
+        for path, dir_names, file_names in os.walk(path_or_repo):
+            list_of_files.extend([os.path.join(path, f) for f in file_names])
+        return list_of_files
+
+    # Can't grab the files if we are on offline mode.
+    if is_offline_mode() or local_files_only:
+        return []
+
+    # Otherwise we grab the token and use the model_info method.
+    if isinstance(use_auth_token, str):
+        token = use_auth_token
+    elif use_auth_token is True:
+        token = HfFolder.get_token()
+    else:
+        token = None
+    model_info = HfApi(endpoint=HUGGINGFACE_CO_RESOLVE_ENDPOINT).model_info(
+        path_or_repo, revision=revision, token=token
+    )
+    return [f.rfilename for f in model_info.siblings]
 
 
 class cached_property(property):
@@ -1454,8 +1747,21 @@ def tf_required(func):
     return wrapper
 
 
+def is_torch_fx_proxy(x):
+    if is_torch_fx_available():
+        import torch.fx
+
+        return isinstance(x, torch.fx.Proxy)
+    return False
+
+
 def is_tensor(x):
-    """ Tests if ``x`` is a :obj:`torch.Tensor`, :obj:`tf.Tensor` or :obj:`np.ndarray`. """
+    """
+    Tests if ``x`` is a :obj:`torch.Tensor`, :obj:`tf.Tensor`, obj:`jaxlib.xla_extension.DeviceArray` or
+    :obj:`np.ndarray`.
+    """
+    if is_torch_fx_proxy(x):
+        return True
     if is_torch_available():
         import torch
 
@@ -1466,6 +1772,14 @@ def is_tensor(x):
 
         if isinstance(x, tf.Tensor):
             return True
+
+    if is_flax_available():
+        import jax.numpy as jnp
+        from jax.core import Tracer
+
+        if isinstance(x, (jnp.ndarray, Tracer)):
+            return True
+
     return isinstance(x, np.ndarray)
 
 
@@ -1539,11 +1853,15 @@ class ModelOutput(OrderedDict):
         other_fields_are_none = all(getattr(self, field.name) is None for field in class_fields[1:])
 
         if other_fields_are_none and not is_tensor(first_field):
-            try:
-                iterator = iter(first_field)
+            if isinstance(first_field, dict):
+                iterator = first_field.items()
                 first_field_iterator = True
-            except TypeError:
-                first_field_iterator = False
+            else:
+                try:
+                    iterator = iter(first_field)
+                    first_field_iterator = True
+                except TypeError:
+                    first_field_iterator = False
 
             # if we provided an iterator as first field and the iterator is a (key, value) iterator
             # set the associated fields
@@ -1639,14 +1957,14 @@ class TensorType(ExplicitEnum):
     JAX = "jax"
 
 
-class _BaseLazyModule(ModuleType):
+class _LazyModule(ModuleType):
     """
     Module class that surfaces all objects but only performs associated imports when the objects are requested.
     """
 
     # Very heavily inspired by optuna.integration._IntegrationModule
     # https://github.com/optuna/optuna/blob/master/optuna/integration/__init__.py
-    def __init__(self, name, import_structure):
+    def __init__(self, name, module_file, import_structure, extra_objects=None):
         super().__init__(name)
         self._modules = set(import_structure.keys())
         self._class_to_module = {}
@@ -1655,12 +1973,19 @@ class _BaseLazyModule(ModuleType):
                 self._class_to_module[value] = key
         # Needed for autocompletion in an IDE
         self.__all__ = list(import_structure.keys()) + sum(import_structure.values(), [])
+        self.__file__ = module_file
+        self.__path__ = [os.path.dirname(module_file)]
+        self._objects = {} if extra_objects is None else extra_objects
+        self._name = name
+        self._import_structure = import_structure
 
     # Needed for autocompletion in an IDE
     def __dir__(self):
         return super().__dir__() + self.__all__
 
     def __getattr__(self, name: str) -> Any:
+        if name in self._objects:
+            return self._objects[name]
         if name in self._modules:
             value = self._get_module(name)
         elif name in self._class_to_module.keys():
@@ -1672,5 +1997,213 @@ class _BaseLazyModule(ModuleType):
         setattr(self, name, value)
         return value
 
-    def _get_module(self, module_name: str) -> ModuleType:
-        raise NotImplementedError
+    def _get_module(self, module_name: str):
+        return importlib.import_module("." + module_name, self.__name__)
+
+    def __reduce__(self):
+        return (self.__class__, (self._name, self.__file__, self._import_structure))
+
+
+def copy_func(f):
+    """Returns a copy of a function f."""
+    # Based on http://stackoverflow.com/a/6528148/190597 (Glenn Maynard)
+    g = types.FunctionType(f.__code__, f.__globals__, name=f.__name__, argdefs=f.__defaults__, closure=f.__closure__)
+    g = functools.update_wrapper(g, f)
+    g.__kwdefaults__ = f.__kwdefaults__
+    return g
+
+
+def is_local_clone(repo_path, repo_url):
+    """
+    Checks if the folder in `repo_path` is a local clone of `repo_url`.
+    """
+    # First double-check that `repo_path` is a git repo
+    if not os.path.exists(os.path.join(repo_path, ".git")):
+        return False
+    test_git = subprocess.run("git branch".split(), cwd=repo_path)
+    if test_git.returncode != 0:
+        return False
+
+    # Then look at its remotes
+    remotes = subprocess.run(
+        "git remote -v".split(),
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        check=True,
+        encoding="utf-8",
+        cwd=repo_path,
+    ).stdout
+
+    return repo_url in remotes.split()
+
+
+class PushToHubMixin:
+    """
+    A Mixin containing the functionality to push a model or tokenizer to the hub.
+    """
+
+    def push_to_hub(
+        self,
+        repo_path_or_name: Optional[str] = None,
+        repo_url: Optional[str] = None,
+        use_temp_dir: bool = False,
+        commit_message: Optional[str] = None,
+        organization: Optional[str] = None,
+        private: Optional[bool] = None,
+        use_auth_token: Optional[Union[bool, str]] = None,
+    ) -> str:
+        """
+        Upload the {object_files} to the 🤗 Model Hub while synchronizing a local clone of the repo in
+        :obj:`repo_path_or_name`.
+
+        Parameters:
+            repo_path_or_name (:obj:`str`, `optional`):
+                Can either be a repository name for your {object} in the Hub or a path to a local folder (in which case
+                the repository will have the name of that local folder). If not specified, will default to the name
+                given by :obj:`repo_url` and a local directory with that name will be created.
+            repo_url (:obj:`str`, `optional`):
+                Specify this in case you want to push to an existing repository in the hub. If unspecified, a new
+                repository will be created in your namespace (unless you specify an :obj:`organization`) with
+                :obj:`repo_name`.
+            use_temp_dir (:obj:`bool`, `optional`, defaults to :obj:`False`):
+                Whether or not to clone the distant repo in a temporary directory or in :obj:`repo_path_or_name` inside
+                the current working directory. This will slow things down if you are making changes in an existing repo
+                since you will need to clone the repo before every push.
+            commit_message (:obj:`str`, `optional`):
+                Message to commit while pushing. Will default to :obj:`"add {object}"`.
+            organization (:obj:`str`, `optional`):
+                Organization in which you want to push your {object} (you must be a member of this organization).
+            private (:obj:`bool`, `optional`):
+                Whether or not the repository created should be private (requires a paying subscription).
+            use_auth_token (:obj:`bool` or :obj:`str`, `optional`):
+                The token to use as HTTP bearer authorization for remote files. If :obj:`True`, will use the token
+                generated when running :obj:`transformers-cli login` (stored in :obj:`~/.huggingface`). Will default to
+                :obj:`True` if :obj:`repo_url` is not specified.
+
+
+        Returns:
+            :obj:`str`: The url of the commit of your {object} in the given repository.
+
+        Examples::
+
+            from transformers import {object_class}
+
+            {object} = {object_class}.from_pretrained("bert-base-cased")
+
+            # Push the {object} to your namespace with the name "my-finetuned-bert" and have a local clone in the
+            # `my-finetuned-bert` folder.
+            {object}.push_to_hub("my-finetuned-bert")
+
+            # Push the {object} to your namespace with the name "my-finetuned-bert" with no local clone.
+            {object}.push_to_hub("my-finetuned-bert", use_temp_dir=True)
+
+            # Push the {object} to an organization with the name "my-finetuned-bert" and have a local clone in the
+            # `my-finetuned-bert` folder.
+            {object}.push_to_hub("my-finetuned-bert", organization="huggingface")
+
+            # Make a change to an existing repo that has been cloned locally in `my-finetuned-bert`.
+            {object}.push_to_hub("my-finetuned-bert", repo_url="https://huggingface.co/sgugger/my-finetuned-bert")
+        """
+        if use_temp_dir:
+            # Make sure we use the right `repo_name` for the `repo_url` before replacing it.
+            if repo_url is None:
+                if use_auth_token is None:
+                    use_auth_token = True
+                repo_name = Path(repo_path_or_name).name
+                repo_url = self._get_repo_url_from_name(
+                    repo_name, organization=organization, private=private, use_auth_token=use_auth_token
+                )
+            repo_path_or_name = tempfile.mkdtemp()
+
+        # Create or clone the repo. If the repo is already cloned, this just retrieves the path to the repo.
+        repo = self._create_or_get_repo(
+            repo_path_or_name=repo_path_or_name,
+            repo_url=repo_url,
+            organization=organization,
+            private=private,
+            use_auth_token=use_auth_token,
+        )
+        # Save the files in the cloned repo
+        self.save_pretrained(repo_path_or_name)
+        # Commit and push!
+        url = self._push_to_hub(repo, commit_message=commit_message)
+
+        # Clean up! Clean up! Everybody everywhere!
+        if use_temp_dir:
+            shutil.rmtree(repo_path_or_name)
+
+        return url
+
+    @staticmethod
+    def _get_repo_url_from_name(
+        repo_name: str,
+        organization: Optional[str] = None,
+        private: bool = None,
+        use_auth_token: Optional[Union[bool, str]] = None,
+    ) -> str:
+        if isinstance(use_auth_token, str):
+            token = use_auth_token
+        elif use_auth_token:
+            token = HfFolder.get_token()
+            if token is None:
+                raise ValueError(
+                    "You must login to the Hugging Face hub on this computer by typing `transformers-cli login` and "
+                    "entering your credentials to use `use_auth_token=True`. Alternatively, you can pass your own "
+                    "token as the `use_auth_token` argument."
+                )
+        else:
+            token = None
+
+        # Special provision for the test endpoint (CI)
+        return HfApi(endpoint=HUGGINGFACE_CO_RESOLVE_ENDPOINT).create_repo(
+            token,
+            repo_name,
+            organization=organization,
+            private=private,
+            repo_type=None,
+            exist_ok=True,
+        )
+
+    @classmethod
+    def _create_or_get_repo(
+        cls,
+        repo_path_or_name: Optional[str] = None,
+        repo_url: Optional[str] = None,
+        organization: Optional[str] = None,
+        private: bool = None,
+        use_auth_token: Optional[Union[bool, str]] = None,
+    ) -> Repository:
+        if repo_path_or_name is None and repo_url is None:
+            raise ValueError("You need to specify a `repo_path_or_name` or a `repo_url`.")
+
+        if use_auth_token is None and repo_url is None:
+            use_auth_token = True
+
+        if repo_path_or_name is None:
+            repo_path_or_name = repo_url.split("/")[-1]
+
+        if repo_url is None and not os.path.exists(repo_path_or_name):
+            repo_name = Path(repo_path_or_name).name
+            repo_url = cls._get_repo_url_from_name(
+                repo_name, organization=organization, private=private, use_auth_token=use_auth_token
+            )
+
+        # Create a working directory if it does not exist.
+        if not os.path.exists(repo_path_or_name):
+            os.makedirs(repo_path_or_name)
+
+        repo = Repository(repo_path_or_name, clone_from=repo_url, use_auth_token=use_auth_token)
+        repo.git_pull()
+        return repo
+
+    @classmethod
+    def _push_to_hub(cls, repo: Repository, commit_message: Optional[str] = None) -> str:
+        if commit_message is None:
+            if "Tokenizer" in cls.__name__:
+                commit_message = "add tokenizer"
+            elif "Config" in cls.__name__:
+                commit_message = "add config"
+            else:
+                commit_message = "add model"
+
+        return repo.push_to_hub(commit_message=commit_message)

@@ -39,8 +39,8 @@ LOGITS_PROCESSOR_INPUTS_DOCSTRING = r"""
 
             `What are input IDs? <../glossary.html#input-ids>`__
         scores (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, config.vocab_size)`):
-            Prediction scores of a language modeling head. These can be scores for each vocabulary token before SoftMax
-            or scores for each vocabulary token after SoftMax.
+            Prediction scores of a language modeling head. These can be logits for each vocabulary when not using beam
+            search or log softmax for each vocabulary token when using beam search
         kwargs:
             Additional logits processor specific kwargs.
 
@@ -77,7 +77,7 @@ class LogitsProcessorList(list):
     This class can be used to create a list of :class:`~transformers.LogitsProcessor` or
     :class:`~transformers.LogitsWarper` to subsequently process a :obj:`scores` input tensor. This class inherits from
     list and adds a specific `__call__` method to apply each :class:`~transformers.LogitsProcessor` or
-    :class:`~transformers.LogitsProcessor` to the inputs.
+    :class:`~transformers.LogitsWarper` to the inputs.
     """
 
     @add_start_docstrings(LOGITS_PROCESSOR_INPUTS_DOCSTRING)
@@ -137,7 +137,7 @@ class TemperatureLogitsWarper(LogitsWarper):
 
         self.temperature = temperature
 
-    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor) -> torch.FloatTensor:
         scores = scores / self.temperature
         return scores
 
@@ -184,7 +184,8 @@ class TopPLogitsWarper(LogitsWarper):
     """
 
     def __init__(self, top_p: float, filter_value: float = -float("Inf"), min_tokens_to_keep: int = 1):
-        if not isinstance(top_p, float) or (top_p < 0 or top_p > 1.0):
+        top_p = float(top_p)
+        if top_p < 0 or top_p > 1.0:
             raise ValueError(f"`top_p` has to be a float > 0 and < 1, but is {top_p}")
 
         self.top_p = top_p
@@ -354,7 +355,7 @@ class NoBadWordsLogitsProcessor(LogitsProcessor):
             The id of the `end-of-sequence` token.
     """
 
-    def __init__(self, bad_words_ids: Iterable[Iterable[int]], eos_token_id: int):
+    def __init__(self, bad_words_ids: List[List[int]], eos_token_id: int):
 
         if not isinstance(bad_words_ids, List) or len(bad_words_ids) == 0:
             raise ValueError(f"`bad_words_ids` has to be a non-emtpy list, but is {bad_words_ids}.")
@@ -446,7 +447,7 @@ class NoBadWordsLogitsProcessor(LogitsProcessor):
 
 class PrefixConstrainedLogitsProcessor(LogitsProcessor):
     r"""
-    :class:`transformers.LogitsProcessor` that enforces contrained generation and is useful for prefix-conditioned
+    :class:`transformers.LogitsProcessor` that enforces constrained generation and is useful for prefix-conditioned
     constrained generation. See `Autoregressive Entity Retrieval <https://arxiv.org/abs/2010.00904>`__ for more
     information.
 

@@ -38,7 +38,9 @@ the training data performs consistently better on a wide range of NLP tasks, ach
 pre-trained models will be made publicly available at https://github.com/microsoft/DeBERTa.*
 
 
-The original code can be found `here <https://github.com/microsoft/DeBERTa>`__.
+This model was contributed by `DeBERTa <https://huggingface.co/DeBERTa>`__. This model TF 2.0 implementation was
+contributed by `kamalkraj <https://huggingface.co/kamalkraj>`__ . The original code can be found `here
+<https://github.com/microsoft/DeBERTa>`__.
 
 
 DebertaConfig
@@ -54,6 +56,12 @@ DebertaTokenizer
 .. autoclass:: transformers.DebertaTokenizer
     :members: build_inputs_with_special_tokens, get_special_tokens_mask,
         create_token_type_ids_from_sequences, save_vocabulary
+
+DebertaTokenizerFast
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.DebertaTokenizerFast
+    :members: build_inputs_with_special_tokens, create_token_type_ids_from_sequences
 
 
 DebertaModel
@@ -96,3 +104,45 @@ DebertaForQuestionAnswering
 
 .. autoclass:: transformers.DebertaForQuestionAnswering
     :members: forward
+
+
+TFDebertaModel
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.TFDebertaModel
+    :members: call
+
+
+TFDebertaPreTrainedModel
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.TFDebertaPreTrainedModel
+    :members: call
+
+
+TFDebertaForMaskedLM
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.TFDebertaForMaskedLM
+    :members: call
+
+
+TFDebertaForSequenceClassification
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.TFDebertaForSequenceClassification
+    :members: call
+
+
+TFDebertaForTokenClassification
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.TFDebertaForTokenClassification
+    :members: call
+
+
+TFDebertaForQuestionAnswering
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.TFDebertaForQuestionAnswering
+    :members: call

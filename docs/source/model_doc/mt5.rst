@@ -28,7 +28,8 @@ multilingual variant of T5 that was pre-trained on a new Common Crawl-based data
 the design and modified training of mT5 and demonstrate its state-of-the-art performance on many multilingual
 benchmarks. All of the code and model checkpoints*
 
-The original code can be found `here <https://github.com/google-research/multilingual-t5>`__.
+This model was contributed by `patrickvonplaten <https://huggingface.co/patrickvonplaten>`__. The original code can be
+found `here <https://github.com/google-research/multilingual-t5>`__.
 
 MT5Config
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -92,4 +93,18 @@ TFMT5EncoderModel
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: transformers.TFMT5EncoderModel
+    :members:
+
+
+FlaxMT5Model
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.FlaxMT5Model
+    :members:
+
+
+FlaxMT5ForConditionalGeneration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.FlaxMT5ForConditionalGeneration
     :members:

@@ -37,6 +37,7 @@ Implementation Notes
     - the model starts generating with :obj:`pad_token_id` (which has 0 as a token_embedding) as the prefix (Bart uses
       :obj:`<s/>`),
 - Code to bulk convert models can be found in ``convert_marian_to_pytorch.py``.
+- This model was contributed by `sshleifer <https://huggingface.co/sshleifer>`__.
 
 Naming
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -102,8 +103,8 @@ Here is the code to see all available pretrained models on the hub:
 
 .. code-block:: python
 
-    from transformers.hf_api import HfApi
-    model_list = HfApi().model_list()
+    from huggingface_hub.hf_api import HfApi
+    model_list = HfApi().list_models()
     org = "Helsinki-NLP"
     model_ids = [x.modelId for x in model_list if x.modelId.startswith(org)]
     suffix = [x.split('/')[1] for x in model_ids]
@@ -215,3 +216,17 @@ TFMarianMTModel
 
 .. autoclass:: transformers.TFMarianMTModel
     :members: call
+
+
+FlaxMarianModel
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.FlaxMarianModel
+    :members: __call__
+
+
+FlaxMarianMTModel
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: transformers.FlaxMarianMTModel
+    :members: __call__

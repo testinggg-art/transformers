@@ -18,15 +18,15 @@
 """
 
 
-import copy
 import math
 
 import numpy as np
 import torch
-import torch.nn as nn
-from torch.nn import CrossEntropyLoss
+from torch import nn
+from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from ...activations import gelu
+from ...deepspeed import is_deepspeed_zero3_enabled
 from ...file_utils import (
     add_code_sample_docstrings,
     add_start_docstrings,
@@ -85,9 +85,19 @@ class Embeddings(nn.Module):
         self.word_embeddings = nn.Embedding(config.vocab_size, config.dim, padding_idx=config.pad_token_id)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.dim)
         if config.sinusoidal_pos_embds:
-            create_sinusoidal_embeddings(
-                n_pos=config.max_position_embeddings, dim=config.dim, out=self.position_embeddings.weight
-            )
+
+            if is_deepspeed_zero3_enabled():
+                import deepspeed
+
+                with deepspeed.zero.GatheredParameters(self.position_embeddings.weight, modifier_rank=0):
+                    if torch.distributed.get_rank() == 0:
+                        create_sinusoidal_embeddings(
+                            n_pos=config.max_position_embeddings, dim=config.dim, out=self.position_embeddings.weight
+                        )
+            else:
+                create_sinusoidal_embeddings(
+                    n_pos=config.max_position_embeddings, dim=config.dim, out=self.position_embeddings.weight
+                )
 
         self.LayerNorm = nn.LayerNorm(config.dim, eps=1e-12)
         self.dropout = nn.Dropout(config.dropout)
@@ -167,11 +177,11 @@ class MultiHeadSelfAttention(nn.Module):
         mask_reshp = (bs, 1, 1, k_length)
 
         def shape(x):
-            """ separate heads """
+            """separate heads"""
             return x.view(bs, -1, self.n_heads, dim_per_head).transpose(1, 2)
 
         def unshape(x):
-            """ group heads """
+            """group heads"""
             return x.transpose(1, 2).contiguous().view(bs, -1, self.n_heads * dim_per_head)
 
         q = shape(self.q_lin(query))  # (bs, n_heads, q_length, dim_per_head)
@@ -274,9 +284,7 @@ class Transformer(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.n_layers = config.n_layers
-
-        layer = TransformerBlock(config)
-        self.layer = nn.ModuleList([copy.deepcopy(layer) for _ in range(config.n_layers)])
+        self.layer = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
 
     def forward(
         self, x, attn_mask=None, head_mask=None, output_attentions=False, output_hidden_states=False, return_dict=None
@@ -579,6 +587,7 @@ class DistilBertForSequenceClassification(DistilBertPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
+        self.config = config
 
         self.distilbert = DistilBertModel(config)
         self.pre_classifier = nn.Linear(config.dim, config.dim)
@@ -587,7 +596,7 @@ class DistilBertForSequenceClassification(DistilBertPreTrainedModel):
 
         self.init_weights()
 
-    @add_start_docstrings_to_model_forward(DISTILBERT_INPUTS_DOCSTRING.format("batch_size, num_choices"))
+    @add_start_docstrings_to_model_forward(DISTILBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
         tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint=_CHECKPOINT_FOR_DOC,
@@ -631,12 +640,26 @@ class DistilBertForSequenceClassification(DistilBertPreTrainedModel):
 
         loss = None
         if labels is not None:
-            if self.num_labels == 1:
-                loss_fct = nn.MSELoss()
-                loss = loss_fct(logits.view(-1), labels.view(-1))
-            else:
-                loss_fct = nn.CrossEntropyLoss()
+            if self.config.problem_type is None:
+                if self.num_labels == 1:
+                    self.config.problem_type = "regression"
+                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                    self.config.problem_type = "single_label_classification"
+                else:
+                    self.config.problem_type = "multi_label_classification"
+
+            if self.config.problem_type == "regression":
+                loss_fct = MSELoss()
+                if self.num_labels == 1:
+                    loss = loss_fct(logits.squeeze(), labels.squeeze())
+                else:
+                    loss = loss_fct(logits, labels)
+            elif self.config.problem_type == "single_label_classification":
+                loss_fct = CrossEntropyLoss()
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+            elif self.config.problem_type == "multi_label_classification":
+                loss_fct = BCEWithLogitsLoss()
+                loss = loss_fct(logits, labels)
 
         if not return_dict:
             output = (logits,) + distilbert_output[1:]
@@ -713,8 +736,8 @@ class DistilBertForQuestionAnswering(DistilBertPreTrainedModel):
         hidden_states = self.dropout(hidden_states)  # (bs, max_query_len, dim)
         logits = self.qa_outputs(hidden_states)  # (bs, max_query_len, 2)
         start_logits, end_logits = logits.split(1, dim=-1)
-        start_logits = start_logits.squeeze(-1)  # (bs, max_query_len)
-        end_logits = end_logits.squeeze(-1)  # (bs, max_query_len)
+        start_logits = start_logits.squeeze(-1).contiguous()  # (bs, max_query_len)
+        end_logits = end_logits.squeeze(-1).contiguous()  # (bs, max_query_len)
 
         total_loss = None
         if start_positions is not None and end_positions is not None:
@@ -725,8 +748,8 @@ class DistilBertForQuestionAnswering(DistilBertPreTrainedModel):
                 end_positions = end_positions.squeeze(-1)
             # sometimes the start/end positions are outside our model inputs, we ignore these terms
             ignored_index = start_logits.size(1)
-            start_positions.clamp_(0, ignored_index)
-            end_positions.clamp_(0, ignored_index)
+            start_positions = start_positions.clamp(0, ignored_index)
+            end_positions = end_positions.clamp(0, ignored_index)
 
             loss_fct = nn.CrossEntropyLoss(ignore_index=ignored_index)
             start_loss = loss_fct(start_logits, start_positions)

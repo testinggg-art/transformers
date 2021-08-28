@@ -60,6 +60,12 @@ def require_version(requirement: str, hint: Optional[str] = None) -> None:
     Args:
         requirement (:obj:`str`): pip style definition, e.g.,  "tokenizers==0.9.4", "tqdm>=4.27", "numpy"
         hint (:obj:`str`, `optional`): what suggestion to print in case of requirements not being met
+
+    Example::
+
+       require_version("pandas>1.1.2")
+       require_version("numpy>1.18.5", "this is important to have for whatever reason")
+
     """
 
     hint = f"\n{hint}" if hint is not None else ""
@@ -109,12 +115,6 @@ def require_version(requirement: str, hint: Optional[str] = None) -> None:
 
 
 def require_version_core(requirement):
-    """ require_version wrapper which emits a core-specific hint on failure """
+    """require_version wrapper which emits a core-specific hint on failure"""
     hint = "Try: pip install transformers -U or pip install -e '.[dev]' if you're working with git master"
-    return require_version(requirement, hint)
-
-
-def require_version_examples(requirement):
-    """ require_version wrapper which emits examples-specific hint on failure """
-    hint = "Try: pip install -r examples/requirements.txt"
     return require_version(requirement, hint)

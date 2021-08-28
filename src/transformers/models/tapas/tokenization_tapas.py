@@ -172,8 +172,9 @@ TAPAS_ENCODE_PLUS_ADDITIONAL_KWARGS_DOCSTRING = r"""
                 length is required by one of the truncation/padding parameters. If the model has no specific maximum
                 input length (like XLNet) truncation/padding to a maximum length will be deactivated.
             is_split_into_words (:obj:`bool`, `optional`, defaults to :obj:`False`):
-                Whether or not the input is already pre-tokenized (e.g., split into words), in which case the tokenizer
-                will skip the pre-tokenization step. This is useful for NER or token classification.
+                Whether or not the input is already pre-tokenized (e.g., split into words). If set to :obj:`True`, the
+                tokenizer assumes the input is already split into words (for instance, by splitting it on whitespace)
+                which it will tokenize. This is useful for NER or token classification.
             pad_to_multiple_of (:obj:`int`, `optional`):
                 If set will pad the sequence to a multiple of the provided value. This is especially useful to enable
                 the use of Tensor Cores on NVIDIA hardware with compute capability >= 7.5 (Volta).
@@ -261,7 +262,10 @@ class TapasTokenizer(PreTrainedTokenizer):
             Whether to add empty strings instead of column names.
         update_answer_coordinates (:obj:`bool`, `optional`, defaults to :obj:`False`):
             Whether to recompute the answer coordinates from the answer text.
-
+        min_question_length (:obj:`int`, `optional`):
+            Minimum length of each question in terms of tokens (will be skipped otherwise).
+        max_question_length (:obj:`int`, `optional`):
+            Maximum length of each question in terms of tokens (will be skipped otherwise).
     """
 
     vocab_files_names = VOCAB_FILES_NAMES
@@ -287,6 +291,8 @@ class TapasTokenizer(PreTrainedTokenizer):
         max_row_id: int = None,
         strip_column_names: bool = False,
         update_answer_coordinates: bool = False,
+        min_question_length=None,
+        max_question_length=None,
         model_max_length: int = 512,
         additional_special_tokens: Optional[List[str]] = None,
         **kwargs
@@ -317,6 +323,8 @@ class TapasTokenizer(PreTrainedTokenizer):
             max_row_id=max_row_id,
             strip_column_names=strip_column_names,
             update_answer_coordinates=update_answer_coordinates,
+            min_question_length=min_question_length,
+            max_question_length=max_question_length,
             model_max_length=model_max_length,
             additional_special_tokens=additional_special_tokens,
             **kwargs,
@@ -345,6 +353,8 @@ class TapasTokenizer(PreTrainedTokenizer):
         self.max_row_id = max_row_id if max_row_id is not None else self.model_max_length
         self.strip_column_names = strip_column_names
         self.update_answer_coordinates = update_answer_coordinates
+        self.min_question_length = min_question_length
+        self.max_question_length = max_question_length
 
     @property
     def do_lower_case(self):
@@ -374,7 +384,7 @@ class TapasTokenizer(PreTrainedTokenizer):
         return split_tokens
 
     def _convert_token_to_id(self, token):
-        """ Converts a token (str) in an id using the vocab. """
+        """Converts a token (str) in an id using the vocab."""
         return self.vocab.get(token, self.vocab.get(self.unk_token))
 
     def _convert_id_to_token(self, index):
@@ -382,7 +392,7 @@ class TapasTokenizer(PreTrainedTokenizer):
         return self.ids_to_tokens.get(index, self.unk_token)
 
     def convert_tokens_to_string(self, tokens):
-        """ Converts a sequence of tokens (string) in a single string. """
+        """Converts a sequence of tokens (string) in a single string."""
         out_string = " ".join(tokens).replace(" ##", "").strip()
         return out_string
 
@@ -510,12 +520,9 @@ class TapasTokenizer(PreTrainedTokenizer):
         """
 
         if already_has_special_tokens:
-            if token_ids_1 is not None:
-                raise ValueError(
-                    "You should not supply a second sequence if the provided sequence of "
-                    "ids is already formatted with special tokens for the model."
-                )
-            return list(map(lambda x: 1 if x in [self.sep_token_id, self.cls_token_id] else 0, token_ids_0))
+            return super().get_special_tokens_mask(
+                token_ids_0=token_ids_0, token_ids_1=token_ids_1, already_has_special_tokens=True
+            )
 
         if token_ids_1 is not None:
             return [1] + ([0] * len(token_ids_0)) + [1] + ([0] * len(token_ids_1))
@@ -731,6 +738,19 @@ class TapasTokenizer(PreTrainedTokenizer):
             **kwargs,
         )
 
+    def _get_question_tokens(self, query):
+        """Tokenizes the query, taking into account the max and min question length."""
+
+        query_tokens = self.tokenize(query)
+        if self.max_question_length is not None and len(query_tokens) > self.max_question_length:
+            logger.warning("Skipping query as its tokens are longer than the max question length")
+            return "", []
+        if self.min_question_length is not None and len(query_tokens) < self.min_question_length:
+            logger.warning("Skipping query as its tokens are shorter than the min question length")
+            return "", []
+
+        return query, query_tokens
+
     def _batch_encode_plus(
         self,
         table,
@@ -759,8 +779,9 @@ class TapasTokenizer(PreTrainedTokenizer):
         table_tokens = self._tokenize_table(table)
 
         queries_tokens = []
-        for query in queries:
-            query_tokens = self.tokenize(query)
+        for idx, query in enumerate(queries):
+            query, query_tokens = self._get_question_tokens(query)
+            queries[idx] = query
             queries_tokens.append(query_tokens)
 
         batch_outputs = self._batch_prepare_for_model(
@@ -1017,7 +1038,7 @@ class TapasTokenizer(PreTrainedTokenizer):
             )
 
         table_tokens = self._tokenize_table(table)
-        query_tokens = self.tokenize(query)
+        query, query_tokens = self._get_question_tokens(query)
 
         return self.prepare_for_model(
             table,
@@ -2360,7 +2381,7 @@ def _get_numeric_value_from_date(date, mask):
 
 
 def _get_span_length_key(span):
-    """Sorts span by decreasing length first and incresing first index second."""
+    """Sorts span by decreasing length first and increasing first index second."""
     return span[1] - span[0], -span[0]
 
 

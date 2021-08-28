@@ -38,6 +38,7 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "is_pt_flax_cross_test: mark test to run only when PT and FLAX interactions are tested"
     )
+    config.addinivalue_line("markers", "is_staging_test: mark test to run only in the staging environment")
 
 
 def pytest_addoption(parser):
@@ -52,3 +53,9 @@ def pytest_terminal_summary(terminalreporter):
     make_reports = terminalreporter.config.getoption("--make-reports")
     if make_reports:
         pytest_terminal_summary_main(terminalreporter, id=make_reports)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    # If no tests are collected, pytest exists with code 5, which makes the CI fail.
+    if exitstatus == 5:
+        session.exitstatus = 0

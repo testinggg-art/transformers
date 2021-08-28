@@ -18,6 +18,7 @@
 import inspect
 import unittest
 
+from transformers import ViTConfig
 from transformers.file_utils import cached_property, is_torch_available, is_vision_available
 from transformers.testing_utils import require_torch, require_vision, slow, torch_device
 
@@ -27,8 +28,9 @@ from .test_modeling_common import ModelTesterMixin, floats_tensor, ids_tensor
 
 if is_torch_available():
     import torch
+    from torch import nn
 
-    from transformers import ViTConfig, ViTForImageClassification, ViTModel
+    from transformers import ViTForImageClassification, ViTModel
     from transformers.models.vit.modeling_vit import VIT_PRETRAINED_MODEL_ARCHIVE_LIST, to_2tuple
 
 
@@ -85,7 +87,12 @@ class ViTModelTester:
         if self.use_labels:
             labels = ids_tensor([self.batch_size], self.type_sequence_label_size)
 
-        config = ViTConfig(
+        config = self.get_config()
+
+        return config, pixel_values, labels
+
+    def get_config(self):
+        return ViTConfig(
             image_size=self.image_size,
             patch_size=self.patch_size,
             num_channels=self.num_channels,
@@ -99,8 +106,6 @@ class ViTModelTester:
             is_decoder=False,
             initializer_range=self.initializer_range,
         )
-
-        return config, pixel_values, labels
 
     def create_and_check_model(self, config, pixel_values, labels):
         model = ViTModel(config=config)
@@ -155,20 +160,10 @@ class ViTModelTest(ModelTesterMixin, unittest.TestCase):
 
     def setUp(self):
         self.model_tester = ViTModelTester(self)
-        self.config_tester = ConfigTester(self, config_class=ViTConfig, hidden_size=37)
+        self.config_tester = ConfigTester(self, config_class=ViTConfig, has_text_modality=False, hidden_size=37)
 
     def test_config(self):
-        config = self.config_tester.config_class(**self.config_tester.inputs_dict)
-        # we omit vocab_size since ViT does not use this
-        self.config_tester.parent.assertTrue(hasattr(config, "hidden_size"))
-        self.config_tester.parent.assertTrue(hasattr(config, "num_attention_heads"))
-        self.config_tester.parent.assertTrue(hasattr(config, "num_hidden_layers"))
-
-        self.config_tester.create_and_test_config_to_json_string()
-        self.config_tester.create_and_test_config_to_json_file()
-        self.config_tester.create_and_test_config_from_and_save_pretrained()
-        self.config_tester.create_and_test_config_with_num_labels()
-        self.config_tester.check_config_can_be_init_without_params()
+        self.config_tester.run_common_tests()
 
     def test_inputs_embeds(self):
         # ViT does not use inputs_embeds
@@ -179,9 +174,9 @@ class ViTModelTest(ModelTesterMixin, unittest.TestCase):
 
         for model_class in self.all_model_classes:
             model = model_class(config)
-            self.assertIsInstance(model.get_input_embeddings(), (torch.nn.Module))
+            self.assertIsInstance(model.get_input_embeddings(), (nn.Module))
             x = model.get_output_embeddings()
-            self.assertTrue(x is None or isinstance(x, torch.nn.Linear))
+            self.assertTrue(x is None or isinstance(x, nn.Linear))
 
     def test_forward_signature(self):
         config, _ = self.model_tester.prepare_config_and_inputs_for_common()
@@ -332,7 +327,7 @@ class ViTModelTest(ModelTesterMixin, unittest.TestCase):
 
 # We will verify our results on an image of cute cats
 def prepare_img():
-    image = Image.open("./tests/fixtures/tests_samples/COCO/cats.png")
+    image = Image.open("./tests/fixtures/tests_samples/COCO/000000039769.png")
     return image
 
 
@@ -351,10 +346,7 @@ class ViTModelIntegrationTest(unittest.TestCase):
         inputs = feature_extractor(images=image, return_tensors="pt").to(torch_device)
 
         # forward pass
-        # currently failing
-        # see https://discuss.pytorch.org/t/runtimeerror-expected-object-of-scalar-type-double-but-got-scalar-type-float-for-argument-2-weight/38961/2
-        outputs = model(inputs["pixel_values"])
-        # outputs = model(**inputs)
+        outputs = model(**inputs)
 
         # verify the logits
         expected_shape = torch.Size((1, 1000))

@@ -45,6 +45,7 @@ logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "LayoutLMConfig"
 _TOKENIZER_FOR_DOC = "LayoutLMTokenizer"
+_CHECKPOINT_FOR_DOC = "microsoft/layoutlm-base-uncased"
 
 LAYOUTLM_PRETRAINED_MODEL_ARCHIVE_LIST = [
     "layoutlm-base-uncased",
@@ -52,7 +53,7 @@ LAYOUTLM_PRETRAINED_MODEL_ARCHIVE_LIST = [
 ]
 
 
-LayoutLMLayerNorm = torch.nn.LayerNorm
+LayoutLMLayerNorm = nn.LayerNorm
 
 
 class LayoutLMEmbeddings(nn.Module):
@@ -611,7 +612,7 @@ class LayoutLMPreTrainedModel(PreTrainedModel):
     _keys_to_ignore_on_load_missing = [r"position_ids"]
 
     def _init_weights(self, module):
-        """ Initialize the weights """
+        """Initialize the weights"""
         if isinstance(module, nn.Linear):
             # Slightly different from the TF version which uses truncated_normal for initialization
             # cf https://github.com/pytorch/pytorch/pull/5617

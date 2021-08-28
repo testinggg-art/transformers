@@ -16,7 +16,7 @@
 
 import unittest
 
-from transformers import is_torch_available
+from transformers import BertGenerationConfig, is_torch_available
 from transformers.testing_utils import require_torch, slow, torch_device
 
 from .test_configuration_common import ConfigTester
@@ -27,7 +27,7 @@ from .test_modeling_common import ModelTesterMixin, floats_tensor, ids_tensor, r
 if is_torch_available():
     import torch
 
-    from transformers import BertGenerationConfig, BertGenerationDecoder, BertGenerationEncoder
+    from transformers import BertGenerationDecoder, BertGenerationEncoder
 
 
 class BertGenerationEncoderTester:
@@ -79,7 +79,12 @@ class BertGenerationEncoderTester:
         if self.use_labels:
             token_labels = ids_tensor([self.batch_size, self.seq_length], self.vocab_size)
 
-        config = BertGenerationConfig(
+        config = self.get_config()
+
+        return config, input_ids, input_mask, token_labels
+
+    def get_config(self):
+        return BertGenerationConfig(
             vocab_size=self.vocab_size,
             hidden_size=self.hidden_size,
             num_hidden_layers=self.num_hidden_layers,
@@ -92,8 +97,6 @@ class BertGenerationEncoderTester:
             is_decoder=False,
             initializer_range=self.initializer_range,
         )
-
-        return config, input_ids, input_mask, token_labels
 
     def prepare_config_and_inputs_for_decoder(self):
         (
@@ -231,13 +234,7 @@ class BertGenerationEncoderTester:
         self.parent.assertEqual(result.logits.shape, (self.batch_size, self.seq_length, self.vocab_size))
 
     def prepare_config_and_inputs_for_common(self):
-        config_and_inputs = self.prepare_config_and_inputs()
-        (
-            config,
-            input_ids,
-            input_mask,
-            token_labels,
-        ) = config_and_inputs
+        config, input_ids, input_mask, token_labels = self.prepare_config_and_inputs()
         inputs_dict = {"input_ids": input_ids, "attention_mask": input_mask}
         return config, inputs_dict
 
@@ -258,6 +255,11 @@ class BertGenerationEncoderTest(ModelTesterMixin, GenerationTesterMixin, unittes
     def test_model(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_model(*config_and_inputs)
+
+    def test_model_as_bert(self):
+        config, input_ids, input_mask, token_labels = self.model_tester.prepare_config_and_inputs()
+        config.model_type = "bert"
+        self.model_tester.create_and_check_model(config, input_ids, input_mask, token_labels)
 
     def test_model_as_decoder(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs_for_decoder()
